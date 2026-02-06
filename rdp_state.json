@@ -1,5 +1,6 @@
 {
   "status": "stopped",
-  "updated_at": 1770382604,
-  "note": "dispatch failed"
+  "owner_chat_id": "6260322527",
+  "updated_at": 1770382720,
+  "note": "reset by telegram"
 }
