@@ -1,0 +1,240 @@
+name: 🖥️ Windows RDP (Public Endpoint)
+
+on:
+  workflow_dispatch:
+    inputs:
+      os_version:
+        description: "📀 Select Operating System / Chọn Hệ Điều Hành"
+        required: true
+        default: "Windows Server 2022 (Docker - 4vCPU | 8GB RAM)"
+        type: choice
+        options:
+          - "Windows Server 2025 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows Server 2022 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows Server 2019 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows Server 2016 (Docker - 4vCPU | 8GB RAM)"
+
+      language:
+        description: "🌐 Language / Ngôn ngữ"
+        required: true
+        default: "Tiếng Việt"
+        type: choice
+        options:
+          - "Tiếng Việt"
+          - "English"
+
+      chat_id:
+        description: "📨 Telegram chat_id nhận thông tin"
+        required: true
+        type: string
+
+      username:
+        description: "👤 RDP Username"
+        required: true
+        default: "Admin"
+        type: string
+
+      password:
+        description: "🔐 RDP Password"
+        required: true
+        default: "Window@123456"
+        type: string
+
+concurrency:
+  group: windowsrdp-one-at-a-time
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mark state = running (lock)
+        run: |
+          set -e
+          TS="$(date +%s)"
+          cat > rdp_state.json << EOF
+          {
+            "status": "running",
+            "owner_chat_id": "${{ github.event.inputs.chat_id }}",
+            "started_at": $TS,
+            "updated_at": $TS,
+            "note": "started by workflow"
+          }
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add rdp_state.json
+          git commit -m "RDP: lock running" || true
+          git push || true
+
+      - name: Prepare ports + start Windows container
+        id: prep
+        run: |
+          set -euo pipefail
+          OS_NAME="${{ github.event.inputs.os_version }}"
+          echo "OS_NAME=$OS_NAME" >> $GITHUB_ENV
+
+          # random ports (avoid conflict)
+          RDP_PORT=$(shuf -i 20000-39999 -n 1)
+          WEB_PORT=$(shuf -i 40000-59999 -n 1)
+
+          echo "RDP_PORT=$RDP_PORT" >> $GITHUB_ENV
+          echo "WEB_PORT=$WEB_PORT" >> $GITHUB_ENV
+
+          cat > docker-compose.yml << EOF
+          services:
+            win:
+              image: dockurr/windows
+              environment:
+                VERSION: "${{ github.event.inputs.os_version }}"
+                USERNAME: "${{ github.event.inputs.username }}"
+                PASSWORD: "${{ github.event.inputs.password }}"
+                RAM_SIZE: "8G"
+                CPU_CORES: "4"
+                DISK_SIZE: "60G"
+              devices: [ "/dev/kvm" ]
+              ports:
+                - "${RDP_PORT}:3389"
+                - "${WEB_PORT}:8006"
+          EOF
+
+          docker compose up -d
+
+      - name: Start public tunnel (Kami Tunnel)
+        run: |
+          set -euo pipefail
+          wget -q https://github.com/kami2k1/tunnel/releases/latest/download/kami-tunnel-linux-amd64.tar.gz
+          tar -xzf kami-tunnel-linux-amd64.tar.gz
+          chmod +x kami-tunnel
+
+          mkdir -p tunnel_rdp tunnel_web
+          cp kami-tunnel tunnel_rdp/kami-tunnel
+          cp kami-tunnel tunnel_web/kami-tunnel
+
+          (cd tunnel_rdp && nohup ./kami-tunnel $RDP_PORT > tunnel.log 2>&1 & echo $! > pid)
+          sleep 2
+          (cd tunnel_web && nohup ./kami-tunnel $WEB_PORT > tunnel.log 2>&1 & echo $! > pid)
+          sleep 2
+
+      - name: Get endpoints
+        id: endpoints
+        run: |
+          set -euo pipefail
+
+          RDP_PUBLIC=""
+          for i in $(seq 1 80); do
+            if [ -f tunnel_rdp/kami_tunnel.txt ]; then
+              C=$(head -1 tunnel_rdp/kami_tunnel.txt || true)
+              if echo "$C" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$'; then
+                RDP_PUBLIC="$C"
+                break
+              fi
+            fi
+            sleep 3
+          done
+          [ -n "$RDP_PUBLIC" ] || (echo "ERROR: no RDP endpoint" && exit 1)
+
+          WEB_PUBLIC=""
+          for i in $(seq 1 80); do
+            if [ -f tunnel_web/kami_tunnel.txt ]; then
+              C=$(head -1 tunnel_web/kami_tunnel.txt || true)
+              if echo "$C" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$'; then
+                WEB_PUBLIC="$C"
+                break
+              fi
+            fi
+            sleep 3
+          done
+          [ -n "$WEB_PUBLIC" ] || (echo "ERROR: no WEB endpoint" && exit 1)
+
+          echo "RDP_PUBLIC=$RDP_PUBLIC" >> $GITHUB_ENV
+          echo "WEB_PUBLIC=$WEB_PUBLIC" >> $GITHUB_ENV
+
+      - name: Send info to Telegram + save state
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          TS="$(date +%s)"
+
+          RDP="${RDP_PUBLIC}"
+          WEB="${WEB_PUBLIC}"
+          USER="${{ github.event.inputs.username }}"
+          PASS="${{ github.event.inputs.password }}"
+          CHAT="${{ github.event.inputs.chat_id }}"
+          OS="${OS_NAME}"
+
+          # save to repo
+          cat > rdp_state.json << EOF
+          {
+            "status": "running",
+            "owner_chat_id": "${{ github.event.inputs.chat_id }}",
+            "started_at": $TS,
+            "updated_at": $TS,
+            "os": "$(echo "$OS" | sed 's/"/\\"/g')",
+            "endpoint": "$RDP",
+            "web": "$WEB",
+            "username": "$USER",
+            "password": "$PASS"
+          }
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add rdp_state.json
+          git commit -m "RDP: update connection info" || true
+          git push || true
+
+          # send telegram
+          MSG="🖥️ Windows RDP READY%0AOS: $OS%0A%0ARDP: $RDP%0AUser: $USER%0APass: $PASS%0A%0AWeb: $WEB"
+          curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT}" \
+            -d "text=${MSG}" \
+            -d "disable_web_page_preview=true" > /dev/null
+
+      - name: Keep alive
+        run: |
+          echo "RDP running. Keeping job alive..."
+          # keep alive ~5h 50m
+          sleep 21000
+
+      - name: Mark state = stopped (unlock)
+        if: always()
+        run: |
+          set -e
+          TS="$(date +%s)"
+          # keep old values if exist, but mark stopped
+          if [ -f rdp_state.json ]; then
+            python - << 'PY'
+import json, time
+p="rdp_state.json"
+try:
+  d=json.load(open(p,"r",encoding="utf-8"))
+except Exception:
+  d={}
+d["status"]="stopped"
+d["updated_at"]=int(time.time())
+d["note"]="workflow finished"
+json.dump(d, open(p,"w",encoding="utf-8"), ensure_ascii=False, indent=2)
+open(p,"a",encoding="utf-8").write("\n")
+PY
+          else
+            cat > rdp_state.json << EOF
+            {"status":"stopped","updated_at":$TS,"note":"workflow finished"}
+          EOF
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add rdp_state.json
+          git commit -m "RDP: unlock stopped" || true
+          git push || true

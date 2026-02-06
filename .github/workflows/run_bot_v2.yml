@@ -1,0 +1,35 @@
+name: Run Telegram Bot
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "bot.py"
+      - ".github/workflows/run_bot.yml"
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyTelegramBotAPI requests
+
+      - name: Run bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          WORKFLOW_FILE: "WindowsRDP.yml"
+          STATE_PATH: "rdp_state.json"
+          COOLDOWN_SECONDS: "60"
+        run: |
+          python bot.py
