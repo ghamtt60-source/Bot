@@ -1,0 +1,322 @@
+name: 🖥️ Windows RDP (Public IP)
+
+on: 
+  workflow_dispatch:
+    inputs:
+      os_version:
+        description: '📀 Select Operating System / Chọn Hệ Điều Hành'
+        required: true
+        default: 'Windows Server 2025 (Docker - 4vCPU | 8GB RAM)'
+        type: choice
+        options: 
+          - "Windows Server 2025 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows Server 2022 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows Server 2019 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows Server 2012 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows 11 Professional (Docker - 4vCPU | 8GB RAM)"
+          - "Windows 10 Professional (Docker - 4vCPU | 8GB RAM)"
+
+      num_machines:
+        description: '🖥️ Number of Machines / Số lượng máy (1-10)'
+        required: true
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
+          - '9'
+          - '10'
+
+      language:
+        description: '🌐 Language / Ngôn ngữ'
+        required: true
+        default: 'English'
+        type: choice
+        options:
+          - "English"
+          - "Tiếng Việt"
+
+      chat_id:
+        description: '📨 Telegram chat_id to send connection info'
+        required: true
+        type: string
+
+      username:
+        description: '👤 RDP Username'
+        required: true
+        default: 'Admin'
+        type: string
+
+      password:
+        description: '🔐 RDP Password'
+        required: true
+        default: 'Window@123456'
+        type: string
+
+jobs:
+  # ==================== PREPARE MATRIX ====================
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          NUM="${{ github.event.inputs.num_machines }}"
+          MATRIX="["
+          for i in $(seq 1 $NUM); do
+            if [ $i -gt 1 ]; then MATRIX="${MATRIX},"; fi
+            MATRIX="${MATRIX}${i}"
+          done
+          MATRIX="${MATRIX}]"
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  # ==================== WINDOWS RDP DOCKER ====================
+  windows-rdp-docker:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      matrix:
+        instance: ${{ fromJson(needs.prepare.outputs.matrix) }}
+      fail-fast: false
+      max-parallel: 10
+
+    steps:
+      - name: 🔧 System Initialization / Khởi tạo hệ thống
+        run: |
+          set -euo pipefail
+          sudo apt-get update > /dev/null 2>&1
+
+          SELECTED_OS="${{ github.event.inputs.os_version }}"
+          INSTANCE="${{ matrix.instance }}"
+          USERNAME_IN="${{ github.event.inputs.username }}"
+          PASSWORD_IN="${{ github.event.inputs.password }}"
+
+          # Determine Windows Version
+          if [[ "$SELECTED_OS" == *"2025"* ]]; then
+            VERSION="2025"
+            OS_NAME="Windows Server 2025"
+          elif [[ "$SELECTED_OS" == *"2022"* ]]; then
+            VERSION="2022"
+            OS_NAME="Windows Server 2022"
+          elif [[ "$SELECTED_OS" == *"2019"* ]]; then
+            VERSION="2019"
+            OS_NAME="Windows Server 2019"
+          elif [[ "$SELECTED_OS" == *"2012"* ]]; then
+            VERSION="2012"
+            OS_NAME="Windows Server 2012"
+          elif [[ "$SELECTED_OS" == *"11"* ]]; then
+            VERSION="11"
+            OS_NAME="Windows 11 Professional"
+          elif [[ "$SELECTED_OS" == *"10"* ]]; then
+            VERSION="10"
+            OS_NAME="Windows 10 Professional"
+          else
+            VERSION="2025"
+            OS_NAME="Windows Server"
+          fi
+
+          # Calculate unique ports for each instance
+          RDP_PORT=$((3389 + INSTANCE - 1))
+          WEB_PORT=$((8006 + INSTANCE - 1))
+
+          # Create Docker Compose Configuration
+          cat <<EOF > docker-compose.yml
+          version: "3.9"
+          services:
+            windows:
+              image: dockurr/windows
+              container_name: windows_rdp_${INSTANCE}
+              privileged: true
+              environment:
+                VERSION: "$VERSION"
+                USERNAME: "$USERNAME_IN"
+                PASSWORD: "$PASSWORD_IN"
+                RAM_SIZE: "8G"
+                CPU_CORES: "4"
+                DISK_SIZE: "60G"
+              devices: [ "/dev/kvm" ]
+              ports:
+                - "${RDP_PORT}:3389"
+                - "${WEB_PORT}:8006"
+          EOF
+
+          docker compose up -d > /dev/null 2>&1
+
+          echo "OS_NAME=$OS_NAME" >> $GITHUB_ENV
+          echo "RDP_PORT=$RDP_PORT" >> $GITHUB_ENV
+          echo "WEB_PORT=$WEB_PORT" >> $GITHUB_ENV
+
+          # Download Kami Tunnel
+          wget -q https://github.com/kami2k1/tunnel/releases/latest/download/kami-tunnel-linux-amd64.tar.gz
+          tar -xzf kami-tunnel-linux-amd64.tar.gz > /dev/null 2>&1
+          chmod +x kami-tunnel
+
+          # Run each tunnel in its own folder so outputs don't clash
+          mkdir -p tunnel_rdp tunnel_web
+          cp kami-tunnel tunnel_rdp/kami-tunnel
+          cp kami-tunnel tunnel_web/kami-tunnel
+
+          # Start Kami Tunnel for RDP
+          (cd tunnel_rdp && nohup ./kami-tunnel $RDP_PORT > tunnel.log 2>&1 & echo $! > pid)
+          sleep 2
+
+          # Start Kami Tunnel for Web Viewer
+          (cd tunnel_web && nohup ./kami-tunnel $WEB_PORT > tunnel.log 2>&1 & echo $! > pid)
+          sleep 2
+
+      - name: 🌐 Connection Information / Thông tin kết nối
+        id: conn
+        run: |
+          set -euo pipefail
+          LANG="${{ github.event.inputs.language }}"
+          INSTANCE="${{ matrix.instance }}"
+          USERNAME_IN="${{ github.event.inputs.username }}"
+          PASSWORD_IN="${{ github.event.inputs.password }}"
+
+          if [ "$LANG" = "Tiếng Việt" ]; then
+            echo "🔄 Đang thiết lập kết nối đến $OS_NAME #$INSTANCE..."
+          else
+            echo "🔄 Establishing connection to $OS_NAME #$INSTANCE..."
+          fi
+          echo ""
+
+          # Get RDP Endpoint
+          if [ "$LANG" = "Tiếng Việt" ]; then
+            echo "⏳ Đang chờ RDP tunnel (Cổng $RDP_PORT)..."
+          else
+            echo "⏳ Waiting for RDP tunnel (Port $RDP_PORT)..."
+          fi
+
+          RDP_PUBLIC=""
+          RDP_RETRY=0
+          while [ -z "$RDP_PUBLIC" ] && [ $RDP_RETRY -lt 80 ]; do
+            if [ -f tunnel_rdp/kami_tunnel.txt ]; then
+              RDP_CONTENT=$(cat tunnel_rdp/kami_tunnel.txt 2>/dev/null | head -1)
+              if [[ "$RDP_CONTENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
+                RDP_PUBLIC="$RDP_CONTENT"
+                break
+              fi
+            fi
+            sleep 3
+            RDP_RETRY=$((RDP_RETRY + 1))
+          done
+
+          if [ -z "$RDP_PUBLIC" ]; then
+            echo "❌ ERROR: Could not retrieve RDP public endpoint"
+            exit 1
+          fi
+
+          # Get Web Endpoint
+          if [ "$LANG" = "Tiếng Việt" ]; then
+            echo "⏳ Đang chờ Web tunnel (Cổng $WEB_PORT)..."
+          else
+            echo "⏳ Waiting for Web tunnel (Port $WEB_PORT)..."
+          fi
+
+          WEB_PUBLIC=""
+          WEB_RETRY=0
+          while [ -z "$WEB_PUBLIC" ] && [ $WEB_RETRY -lt 80 ]; do
+            if [ -f tunnel_web/kami_tunnel.txt ]; then
+              WEB_CONTENT=$(cat tunnel_web/kami_tunnel.txt 2>/dev/null | head -1)
+              if [[ "$WEB_CONTENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
+                WEB_PUBLIC="$WEB_CONTENT"
+                break
+              fi
+            fi
+            sleep 3
+            WEB_RETRY=$((WEB_RETRY + 1))
+          done
+
+          if [ -z "$WEB_PUBLIC" ]; then
+            echo "❌ ERROR: Could not retrieve Web public endpoint"
+            exit 1
+          fi
+
+          echo "RDP_PUBLIC=$RDP_PUBLIC" >> $GITHUB_ENV
+          echo "WEB_PUBLIC=$WEB_PUBLIC" >> $GITHUB_ENV
+
+          # Pretty output in logs
+          echo ""
+          if [ "$LANG" = "Tiếng Việt" ]; then
+            echo "✅ $OS_NAME #$INSTANCE SẴN SÀNG!"
+            echo "🌐 RDP: $RDP_PUBLIC"
+            echo "👤 User: $USERNAME_IN"
+            echo "🔐 Pass: $PASSWORD_IN"
+            echo "🕸️ Web Viewer: http://$WEB_PUBLIC"
+          else
+            echo "✅ $OS_NAME #$INSTANCE READY!"
+            echo "🌐 RDP: $RDP_PUBLIC"
+            echo "👤 User: $USERNAME_IN"
+            echo "🔐 Pass: $PASSWORD_IN"
+            echo "🕸️ Web Viewer: http://$WEB_PUBLIC"
+          fi
+
+      - name: 📩 Send connection info to Telegram
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          LANG: ${{ github.event.inputs.language }}
+          INSTANCE: ${{ matrix.instance }}
+          USERNAME_IN: ${{ github.event.inputs.username }}
+          PASSWORD_IN: ${{ github.event.inputs.password }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TG_TOKEN:-}" ]; then
+            echo "TELEGRAM_BOT_TOKEN is missing in secrets."
+            exit 1
+          fi
+
+          if [ "$LANG" = "Tiếng Việt" ]; then
+            MSG="<b>🖥️ Windows RDP đã sẵn sàng!</b>%0A%0A"
+            MSG="${MSG}🪟 <b>OS:</b> ${OS_NAME} #${INSTANCE}%0A"
+            MSG="${MSG}🌐 <b>RDP:</b> <code>${RDP_PUBLIC}</code>%0A"
+            MSG="${MSG}👤 <b>User:</b> <code>${USERNAME_IN}</code>%0A"
+            MSG="${MSG}🔐 <b>Pass:</b> <code>${PASSWORD_IN}</code>%0A%0A"
+            MSG="${MSG}🕸️ <b>Web Viewer:</b> http://${WEB_PUBLIC}%0A%0A"
+            MSG="${MSG}<i>Tip:</i> Đừng share IP/pass cho người lạ nha."
+          else
+            MSG="<b>🖥️ Windows RDP is ready!</b>%0A%0A"
+            MSG="${MSG}🪟 <b>OS:</b> ${OS_NAME} #${INSTANCE}%0A"
+            MSG="${MSG}🌐 <b>RDP:</b> <code>${RDP_PUBLIC}</code>%0A"
+            MSG="${MSG}👤 <b>User:</b> <code>${USERNAME_IN}</code>%0A"
+            MSG="${MSG}🔐 <b>Pass:</b> <code>${PASSWORD_IN}</code>%0A%0A"
+            MSG="${MSG}🕸️ <b>Web Viewer:</b> http://${WEB_PUBLIC}%0A%0A"
+            MSG="${MSG}<i>Tip:</i> Don't share IP/pass with strangers."
+          fi
+
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            -d "parse_mode=HTML" \
+            -d "disable_web_page_preview=true" \
+            --data-urlencode "text=${MSG}" > /dev/null
+
+      - name: ⏰ Session Keepalive / Duy trì phiên
+        run: |
+          set -euo pipefail
+          LANG="${{ github.event.inputs.language }}"
+          INSTANCE="${{ matrix.instance }}"
+          END_TIME=$(($(date +%s) + 21600))
+
+          while [ $(date +%s) -lt $END_TIME ]; do
+            REMAINING=$(( ($END_TIME - $(date +%s)) / 60 ))
+            HOURS=$(($REMAINING / 60))
+            MINUTES=$(($REMAINING % 60))
+
+            if [ "$LANG" = "Tiếng Việt" ]; then
+              echo -ne "\r🟢 $OS_NAME #$INSTANCE | Còn lại: ${HOURS}h ${MINUTES}m | RDP: $RDP_PUBLIC | Web: http://$WEB_PUBLIC     "
+            else
+              echo -ne "\r🟢 $OS_NAME #$INSTANCE | Remaining: ${HOURS}h ${MINUTES}m | RDP: $RDP_PUBLIC | Web: http://$WEB_PUBLIC     "
+            fi
+
+            sleep 30
+          done
+          echo ""
