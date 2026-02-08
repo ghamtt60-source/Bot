@@ -44,7 +44,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 log = logging.getLogger("rdp-bot")
 
 if not BOT_TOKEN:
-    raise SystemExit("Missing TELEGRAM_BOT_TOKEN")
+    raise SystemExit("8455091390:AAFPcILJzn6eHZJpHAiwjIpuk7kajBan8Ks")
 if not GH_PAT:
     raise SystemExit("Missing GH_PAT")
 if not REPO:
