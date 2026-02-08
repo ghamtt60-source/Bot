@@ -31,7 +31,7 @@ from telebot import types
 
 # ---------------------- CONFIG ----------------------
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+BOT_TOKEN = os.environ.get("8455091390:AAFPcILJzn6eHZJpHAiwjIpuk7kajBan8Ks", "").strip()
 GH_PAT = os.environ.get("GH_PAT", "").strip()
 REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()   # owner/repo
 WORKFLOW_FILE = os.environ.get("WORKFLOW_FILE", "WindowsRDP.yml").strip()
